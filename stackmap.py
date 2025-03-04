@@ -7,10 +7,10 @@ class Stackmap():
             self.stack = [Wave(2*[y0],[x0,x1],'')]
             self.stackhistory = []
             self.titlehistory = []
-            self.colors = {'SiO₂':'#9dd0d4','Al₂O₃':'#a47fad','positive resist':'#f288b6','negative resist':'#d26896'}
+            self.colors = {'SiO₂':'#9dd0d4','Al₂O₃':'#a47fad','positive resist':'#f288b6','negative resist':'#d26896','exchanged TFLN':'#b15a04','annealed TFLN':'#c16a14'}
             self.colors.update(dict(resist='#f288b6',tfln='#d17a24',quartz='#d7dbda',
                                metal='#edcf4a',gold='#edcf4a',sio2='#9dd0d4',al2o3='#a47fad',
-                               ti='#c9c2d1',au='#edcf4a',si='#f0b27a')) # si last since si is in sio2
+                               cr='#c9c2d1',ti='#c9c2d1',au='#edcf4a',si='#f0b27a')) # si last since si is in sio2
         def color(self,name):
             if name is None: return None
             for k in self.colors:
@@ -40,7 +40,25 @@ class Stackmap():
             self.stackhistory += [self.stack[:]]
             self.titlehistory += [title]
             return self
-        def strip(self,layerdepth=1,title='Strip'):
+        def striptop(self,title='Strip'):
+            self.stack = self.stack[:-1]
+            self.stackhistory += [self.stack[:]]
+            self.titlehistory += [title]
+            return self
+        def striplayer(self,name,title='Strip',debug=False):
+            istrip = [i for i,stack in enumerate(self.stack) if name.lower() in stack.name.lower()]
+            if not istrip: print(f'Warning: {name} not found in stack')
+            # self.stack = [stack for i,stack in enumerate(self.stack) if i not in istrip]
+            for i in istrip[::-1]:
+                self.strip(layerdepth=len(self.stack)-i,title=f'layer {i} stripped')
+                if debug:
+                    print(f'layer {i}, {self.stack[i].name} stripped')
+                else:
+                    self.omithistory()
+            self.stackhistory += [self.stack[:]]
+            self.titlehistory += [title]
+            return self
+        def strip(self,layerdepth,title='Strip'):
             # assumes strip layer is the penulitmate layer
             assert layerdepth+1<len(self.stack)
             n = len(self.stack)-layerdepth
@@ -53,9 +71,39 @@ class Stackmap():
             self.titlehistory += [title]
             return self
             # todo: check 'warning: non-zero thickness above stripped layer'
+        def anneal(self,thickness,layerdepth,name=None,title='Anneal'):
+            n,k = len(self.stack),len(self.stack)-layerdepth-2
+            a,b = self.stack[k:k+2]
+            w = Wave(thickness*(~np.isclose(a.y,b.y)),a.x)
+            self.stack = self.stack[:k] + [(a-w).rename(a.name),b] + self.stack[k+2:]
+            self.stackhistory += [self.stack[:]]
+            self.titlehistory += [title]
+            return self
+
+        def exchange(self,thickness,name=None,title='Ion exchange'):
+            # from masketch - top layer assumed to be the mask for the etch
+            assert 1<len(self.stack)
+            a = self.stack[-1]
+            b = self.stack[-2].mergex(a)
+            w = Wave(thickness*np.isclose(a.y,b.y),a.x)
+            # from etch
+            assert np.all(0<=w.y)
+            profile = self.stack[-1].addlayer(-w)
+            self.stack = [u.minimumlayer(profile) for u in self.stack]
+            # add layer
+            layer = self.stack[-1].addlayer(w)
+            name = name if name else 'exchanged '+self.stack[-2].name
+            # swap top two layers
+            cc,bb,aa = *self.stack[-2:],layer.rename(name)
+            aa = aa.mergex(bb,cc)
+            bb = bb.mergex(aa,cc)
+            self.stack = self.stack[:-1] + [(aa-bb+cc).rename(aa.name),aa.rename(bb.name)]
+            self.stackhistory += [self.stack[:]]
+            self.titlehistory += [title]
+            return self
         def etch(self,w,widths=None,title='Etch',invert=False):
             w = w if widths is None else self.widths2wave(widths,w,invert)
-            assert np.all(0<=w)
+            assert np.all(0<=w.y)
             profile = self.stack[-1].addlayer(-w)
             self.stack = [u.minimumlayer(profile) for u in self.stack]
             self.stackhistory += [self.stack[:]]
@@ -68,18 +116,28 @@ class Stackmap():
             assert (+1==mask and 'positive resist' in u0.name.lower()) or (-1==mask and 'negative resist' in u0.name.lower())
             uair = (airgap+max(u0)+0*u0).rename('').setplot(c='#ffffff00',lw=0)
             wmask = maskdepth*np.sign(w if -1==mask else max(w)-w)
-            umask = uair.addlayer(wmask).rename('photomask').setplot(c='#000000bb',lw=0)
+            umask = uair.addlayer(wmask).rename(f'photomask').setplot(c='#000000bb',lw=0)
             self.stackhistory += [self.stack[:] + [uair,umask]]
             self.titlehistory += [title]
             return self
         def develop(self,w,widths=None,title='Develop',invert=False):
             w = w if widths is None else self.widths2wave(widths,w,invert)
             return self.etch(w,title=title)            
-        def exposeanddevelop(self,w,widths=None,mask=None,title0='Expose',title1='Develop',airgap=1,maskdepth=2,invert=False):
+        def exposeanddevelop(self,w,widths=None,mask=None,title='Expose',devtitle='Develop',airgap=1,maskdepth=2,invert=False):
             w = w if widths is None else self.widths2wave(widths,w,invert)
-            self.expose(w,mask=mask,title=title0,airgap=airgap,maskdepth=maskdepth)
-            self.develop(w,title=title1)
+            self.expose(w,mask=mask,title=title,airgap=airgap,maskdepth=maskdepth)
+            self.develop(w,title=devtitle)
             return self
+        def maskedstrip(self,title='Masked strip'):
+            # top layer assumed to be the mask for the strip
+            assert 1<len(self.stack)
+            a = self.stack[-1]
+            b = self.stack[-2].mergex(a)
+            c = self.stack[-3].mergex(b)
+            assert np.allclose(a.x,b.x) and np.allclose(b.x,c.x)
+            w = Wave((b.y-c.y)*np.isclose(a.y,b.y),a.x)
+            return self.etch(w,title=title)
+
         def masketch(self,depth,title='Etch'):
             # top layer assumed to be the mask for the etch
             assert 1<len(self.stack)
@@ -112,6 +170,7 @@ class Stackmap():
         #     return self
         def ppt(self,title,**kwargs):
             save = f"figs/{kwargs.pop('save',title)}.pptx"
+            print(f'saving {save}')
             from pypowerpoint import Presentation,addadvrslide
             from time import sleep
             pngs = list(self.plothistory(title,**kwargs))
@@ -121,6 +180,10 @@ class Stackmap():
                 addadvrslide(prs,title=title,text=text,imagefile=pngfile)
             prs.save(save)
             return prs
+        def omithistory(self,**kwargs):
+            self.stackhistory = self.stackhistory[:-1]
+            self.titlehistory = self.titlehistory[:-1]
+            return self
         def plothistory(self,title,**kwargs):
             # stacks = self.stackhistory[1:]+[self.stack]
             stacks = self.stackhistory
@@ -143,14 +206,16 @@ class Stackmap():
             return Wave.plots(*self.stack[::-1],**d)
 
 if __name__ == '__main__':
-    L = Stackmap(-20,20,-5,15)
-    L.addlayer(5,name='quartz')
-    L.addlayer(3,name='silicon 3µm')
-    L.deposit(0.5,'positive resist 0.5µm')
-    L.exposeanddevelop(0.5,[np.nan,5,10,5,np.nan],mask=+1)
-    L.masketch(1.5)
-    L.deposit(1,'metal 1µm')
-    L.liftoff()
-    L.addlayer(2,name='SiO₂ 2µm')#.plot()
-    L.ppt('stackmap example')
-    L.plot()
+    def test():
+        L = Stackmap(-20,20,-5,15)
+        L.addlayer(5,name='quartz')
+        L.addlayer(3,name='silicon 3µm')
+        L.deposit(0.5,'positive resist 0.5µm')
+        L.exposeanddevelop(0.5,[np.nan,5,10,5,np.nan],mask=+1)
+        L.masketch(1.5)
+        L.deposit(1,'metal 1µm')
+        L.liftoff()
+        L.addlayer(2,name='SiO₂ 2µm')#.plot()
+        # L.ppt('stackmap example')
+        L.plot()
+    test()
